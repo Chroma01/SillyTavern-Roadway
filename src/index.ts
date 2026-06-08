@@ -523,18 +523,11 @@ function attachRoadwayOptionHandlers(roadwayMessageId: number) {
       return;
     }
 
-    const impersonate = globalContext.substituteParams(
-      preset.impersonate,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      {
-        roadwaySelected: message.extra?.[KEYS.EXTRA.OPTIONS]?.[index],
+    const impersonate = globalContext.substituteParams(preset.impersonate, {
+      dynamicMacros: {
+        roadwaySelected: message.extra?.[KEYS.EXTRA.OPTIONS]?.[index] ?? '',
       },
-      undefined,
-    );
+    });
     if (settings.impersonateApi === 'profile') {
       if (!settings.impersonateProfileId) {
         await st_echo('error', 'Please select an impersonation connection profile in the settings.');
@@ -614,14 +607,14 @@ function attachRoadwayOptionHandlers(roadwayMessageId: number) {
             },
             onEntry(data) {
               if (streamingEnabled && data) {
-                textInputElement.val((data as StreamResponse).text);
+                textInputElement.val((data as unknown as StreamResponse).text);
                 textInputElement.trigger('input');
                 textInputElement.trigger('change');
               }
             },
             onFinish(data, error) {
               if (!streamingEnabled && data) {
-                textInputElement.val((data as ExtractedData).content);
+                textInputElement.val((data as unknown as ExtractedData).content);
                 textInputElement.trigger('input');
                 textInputElement.trigger('change');
               }
