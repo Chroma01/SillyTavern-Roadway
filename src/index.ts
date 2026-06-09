@@ -9,6 +9,7 @@ import {
 } from 'sillytavern-utils-lib/config';
 import { ChatMessage, EventNames, ExtractedData, StreamResponse } from 'sillytavern-utils-lib/types';
 import { ChatCompletionPreset } from 'sillytavern-utils-lib/types/chat-completion';
+import { POPUP_RESULT, POPUP_TYPE } from 'sillytavern-utils-lib/types/popup';
 import { TextCompletionPreset } from 'sillytavern-utils-lib/types/text-completion';
 
 const extensionName = 'SillyTavern-Roadway';
@@ -41,6 +42,7 @@ interface ExtensionSettings {
   promptPreset: string;
   autoTrigger: boolean;
   autoOpen: boolean;
+  askPromptPresetOnGenerate: boolean;
   promptPresets: Record<string, PromptPreset>;
   impersonateApi: 'main' | 'profile';
   impersonateProfileId: string;
@@ -79,6 +81,7 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   promptPreset: 'default',
   autoTrigger: false,
   autoOpen: true,
+  askPromptPresetOnGenerate: false,
   impersonateApi: 'main',
   impersonateProfileId: '',
   showUseActionIcon: true,
@@ -119,21 +122,74 @@ async function handleUIChanges(): Promise<void> {
   const impersonateSection = settingsContainer.find('.impersonate_section');
   const impersonateElement = settingsContainer.find('textarea.impersonate');
 
+  function selectPromptPreset(presetName: string, save = true): void {
+    const newPresetValue = settings.promptPresets[presetName] ? presetName : 'default';
+    settings.promptPreset = newPresetValue;
+    promptElement.val(settings.promptPresets[newPresetValue]?.content ?? '');
+    extractionStrategyElement.val(settings.promptPresets[newPresetValue]?.extractionStrategy);
+    impersonateElement.val(settings.promptPresets[newPresetValue]?.impersonate ?? '');
+    impersonateSection.css(
+      'display',
+      settings.promptPresets[newPresetValue]?.extractionStrategy === 'none' ? 'none' : 'block',
+    );
+    $('.roadway_settings select.prompt').val(newPresetValue);
+    if (save) {
+      settingsManager.saveSettings();
+    }
+  }
+
+  async function choosePromptPresetForGeneration(): Promise<string | null> {
+    const presetNames = Object.keys(settings.promptPresets);
+    if (!settings.askPromptPresetOnGenerate || presetNames.length <= 1) {
+      return settings.promptPreset;
+    }
+
+    const popupContent = document.createElement('div');
+    popupContent.className = 'roadway_prompt_preset_popup';
+
+    const label = document.createElement('label');
+    label.htmlFor = 'roadway_prompt_preset_select';
+    label.textContent = 'Prompt preset';
+
+    const promptPresetSelect = document.createElement('select');
+    promptPresetSelect.id = 'roadway_prompt_preset_select';
+    promptPresetSelect.className = 'text_pole';
+    promptPresetSelect.style.width = '100%';
+
+    for (const presetName of presetNames) {
+      const option = document.createElement('option');
+      option.value = presetName;
+      option.textContent = presetName;
+      promptPresetSelect.appendChild(option);
+    }
+
+    promptPresetSelect.value = settings.promptPreset;
+    popupContent.append(label, promptPresetSelect);
+
+    const result = await globalContext.callGenericPopup(popupContent, POPUP_TYPE.CONFIRM, undefined, {
+      okButton: 'Generate',
+      cancelButton: 'Cancel',
+    });
+
+    if (result !== POPUP_RESULT.AFFIRMATIVE) {
+      return null;
+    }
+
+    const selectedPreset = promptPresetSelect.value;
+    if (!settings.promptPresets[selectedPreset]) {
+      return null;
+    }
+
+    selectPromptPreset(selectedPreset);
+    return selectedPreset;
+  }
+
   const { select } = buildPresetSelect('.roadway_settings select.prompt', {
     initialValue: settings.promptPreset,
     initialList: Object.keys(settings.promptPresets),
     readOnlyValues: ['default'],
     onSelectChange: async (_previousValue, newValue) => {
-      const newPresetValue = newValue ?? 'default';
-      settings.promptPreset = newPresetValue;
-      settingsManager.saveSettings();
-      promptElement.val(settings.promptPresets[newPresetValue]?.content ?? '');
-      extractionStrategyElement.val(settings.promptPresets[newPresetValue]?.extractionStrategy);
-      impersonateElement.val(settings.promptPresets[newPresetValue]?.impersonate ?? '');
-      impersonateSection.css(
-        'display',
-        settings.promptPresets[newPresetValue]?.extractionStrategy === 'none' ? 'none' : 'block',
-      );
+      selectPromptPreset(newValue ?? 'default');
     },
     create: {
       onAfterCreate: (value) => {
@@ -158,7 +214,7 @@ async function handleUIChanges(): Promise<void> {
     },
   });
 
-  promptElement.val(settings.promptPresets[settings.promptPreset]?.content ?? '');
+  selectPromptPreset(settings.promptPreset, false);
   promptElement.on('change', function () {
     const template = promptElement.val() as string;
     settings.promptPresets[settings.promptPreset].content = template;
@@ -259,6 +315,13 @@ async function handleUIChanges(): Promise<void> {
     settingsManager.saveSettings();
   });
 
+  const askPromptPresetOnGenerateElement = settingsContainer.find('.ask_prompt_preset_on_generate');
+  askPromptPresetOnGenerateElement.prop('checked', settings.askPromptPresetOnGenerate ?? false);
+  askPromptPresetOnGenerateElement.on('change', function () {
+    settings.askPromptPresetOnGenerate = $(this).prop('checked');
+    settingsManager.saveSettings();
+  });
+
   const showUseActionElement = settingsContainer.find('.show_use_action');
   showUseActionElement.prop('checked', settings.showUseActionIcon);
 
@@ -342,6 +405,11 @@ async function handleUIChanges(): Promise<void> {
         return;
       }
 
+      const selectedPreset = await choosePromptPresetForGeneration();
+      if (!selectedPreset) {
+        return;
+      }
+
       pendingRequests.add(targetMessageId);
       $(this).addClass('spinning');
 
@@ -364,7 +432,7 @@ async function handleUIChanges(): Promise<void> {
       });
       const messages = promptResult.result;
       messages.push({
-        content: context.substituteParams(settings.promptPresets[settings.promptPreset].content),
+        content: context.substituteParams(settings.promptPresets[selectedPreset].content),
         role: settings.messageRole,
       });
       const rest = (await context.ConnectionManagerRequestService.sendRequest(
@@ -374,7 +442,7 @@ async function handleUIChanges(): Promise<void> {
       )) as ExtractedData;
 
       let actions: string[] = [];
-      const extractionStrategy = settings.promptPresets[settings.promptPreset]?.extractionStrategy;
+      const extractionStrategy = settings.promptPresets[selectedPreset]?.extractionStrategy;
       if (extractionStrategy === 'bullet') {
         actions = extractBulletPoints(rest.content);
         if (actions.length === 0) {
